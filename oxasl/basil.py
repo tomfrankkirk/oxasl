@@ -179,6 +179,12 @@ def basil_fit(wsp, asldata, mask=None, output_wsp=None, **kwargs):
                           fabber_corelib=wsp.fabber_corelib, fabber_libs=wsp.fabber_libs,
                           fabber_coreexe=wsp.fabber_coreexe, fabber_exes=wsp.fabber_exes)
         for key, value in result.items():
+            if key == "modelfit":
+                # Treat model fit specially - make it an AslImage and also output a mean
+                # across repeats version for comparison
+                value = output_wsp.asldata_diff.derived(value.data)
+                modelfit_mean = value.mean_across_repeats()
+                setattr(step_wsp, "modelfit_mean", modelfit_mean)
             setattr(step_wsp, key, value)
 
         if step_wsp.logfile is not None and step_wsp.savedir is not None:
@@ -341,8 +347,15 @@ def basil_steps(wsp, asldata, mask=None, **kwargs):
         options["continue-from-mvn"] = wsp.initmvn
 
     # T1 image prior
-    if wsp.t1im:
+    if wsp.t1im is not None:
         spriors = _add_prior(options, spriors, "T_1", type="I", image=wsp.t1im)
+
+    # BAT image prior
+    if wsp.batim is not None:
+        # With a BAT image prior we must include BAT even if we are not inferring it
+        # (in this case the image prior will be treated as ground truth)
+        spriors = _add_prior(options, spriors, "delttiss", type="I", image=wsp.batim)
+        options["incbat"] = True
 
     steps = []
     components = ""
@@ -548,6 +561,13 @@ def basil_steps_multite(wsp, asldata, mask=None, **kwargs):
     if wsp.t1im:
         spriors = _add_prior(options, spriors, "T_1", type="I", image=wsp.t1im)
 
+    # BAT image prior
+    if wsp.batim is not None:
+        # With a BAT image prior we must include BAT even if we are not inferring it
+        # (in this case the image prior will be treated as ground truth)
+        spriors = _add_prior(options, spriors, "delttiss", type="I", image=wsp.batim)
+        options["incbat"] = True
+
     steps = []
     components = ""
 
@@ -702,6 +722,7 @@ class BasilOptions(OptionCategory):
 
         group = IgnorableOptionGroup(parser, "Special options", ignore=self.ignore)
         group.add_option("--t1im", help="Voxelwise T1 tissue estimates", type="image")
+        group.add_option("--batim", "--attim", help="Voxelwise BAT (ATT) estimates in seconds", type="image")
         groups.append(group)
 
         return groups

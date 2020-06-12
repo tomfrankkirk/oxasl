@@ -100,6 +100,8 @@ from oxasl.reporting import LightboxImage
 class OxfordAslOptions(OptionCategory):
     """
     OptionCategory which contains options for preprocessing ASL data
+
+    Note that we effectively reproduce some BASIL options here
     """
 
     def __init__(self, **kwargs):
@@ -123,6 +125,8 @@ class OxfordAslOptions(OptionCategory):
         g.add_option("--infertexch", help="Infer exchange time (multi-TE data only)", action="store_true", default=False)
         g.add_option("--infert1", help="Infer T1 value", action="store_true", default=False)
         g.add_option("--infert2", help="Infer T2 value (multi-TE data only)", action="store_true", default=False)
+        g.add_option("--t1im", help="Voxelwise T1 tissue estimates", type="image")
+        g.add_option("--batim", "--attim", help="Voxelwise BAT (ATT) estimates in seconds", type="image")
         g.add_option("--basil-options", "--fit-options", help="File containing additional options for model fitting step", type="optfile", default=None)
         ret.append(g)
         
@@ -183,7 +187,7 @@ def main():
             options.output = "oxasl"
 
         # Some oxasl command-line specific defaults
-        if options.calib is not None and options.calib_method is None:
+        if (options.calib is not None or options.calib_first_vol) and options.calib_method is None:
             if options.struc is not None:
                 options.calib_method = "refregion"
             else:
@@ -278,7 +282,7 @@ def oxasl_preproc(wsp):
     As a minimum, the attribute ``asldata`` must contain an AslImage object.
     """
     if wsp.calib_first_vol and wsp.calib is None:
-        wsp.calib = wsp.asldata.calib
+        wsp.input.calib = wsp.asldata.calib
 
     report_asl(wsp)
 
@@ -413,6 +417,7 @@ OUTPUT_ITEMS = {
     "fwm" : ("perfusion_wm", 6000, True, "ml/100g/min", "", "10-20"),
     "deltwm" : ("arrival_wm", 1, False, "s", "", ""),
     "modelfit" : ("modelfit", 1, False, "", "", ""),
+    "modelfit_mean" : ("modelfit_mean", 1, False, "", "", ""),
     "residuals" : ("residuals", 1, False, "", "", ""),
     "asldata_diff" : ("asldata_diff", 1, False, "", "", ""),
     "T_exch" : ("texch", 1, False, "", "", ""),
@@ -429,6 +434,13 @@ def output_native(wsp, basil_wsp, report=None):
     if not wsp.output_native: return
 
     wsp.sub("native")
+
+    # Output the differenced data averaged across repeats for kinetic curve comparison
+    # with the model
+    if wsp.asldata.iaf in ("tc", "ct", "diff"):
+        wsp.native.diffdata_mean = wsp.asldata.diff().mean_across_repeats()
+
+    # Output model fitting results
     prefixes = ["", "mean"]
     if wsp.output_stddev:
         prefixes.append("std")
@@ -550,9 +562,13 @@ def output_trans(wsp):
     if wsp.output_struc and wsp.reg.asl2struc is not None:
         wsp.log.write("\nGenerating output in structural space\n")
         wsp.sub("struct")
-        for suffix, output, native_output in __output_trans_helper(wsp): 
-            if wsp.reg.asl2struc is not None:
-                setattr(wsp.struct, output + suffix, reg.asl2struc(wsp, native_output, mask=(output == 'mask')))
+        for suffix in ("", "_std", "_var", "_calib", "_std_calib", "_var_calib"):
+            for output in ("perfusion", "aCBV", "arrival", "perfusion_wm", "arrival_wm", "modelfit", "modelfit_mean", "residuals", "texch", "mask"):
+                native_output = getattr(wsp.native, output + suffix)
+                # Don't transform 4D output (e.g. modelfit) - too large!
+                if native_output is not None and native_output.ndim == 3:
+                    if wsp.reg.asl2struc is not None:
+                        setattr(wsp.struct, output + suffix, reg.asl2struc(wsp, native_output, mask=(output == 'mask')))
         wsp.log.write(" - DONE\n")
 
     if wsp.output_mni:
@@ -562,9 +578,13 @@ def output_trans(wsp):
         else:
             reg.reg_struc2std(wsp)
             wsp.sub("mni")
-            for suffix, output, native_output in __output_trans_helper(wsp): 
-                struc_output = reg.asl2struc(wsp, native_output, mask=(output == 'mask'))
-                setattr(wsp.mni, output + suffix, reg.struc2std(wsp, struc_output))
+            for suffix in ("", "_std", "_var", "_calib", "_std_calib", "_var_calib"):
+                for output in ("perfusion", "aCBV", "arrival", "perfusion_wm", "arrival_wm", "modelfit", "modelfit_mean", "mask"):
+                    native_output = getattr(wsp.native, output + suffix)
+                    # Don't transform 4D output (e.g. modelfit) - too large!
+                    if native_output is not None and native_output.ndim == 3:
+                        struc_output = reg.asl2struc(wsp, native_output, mask=(output == 'mask'))
+                        setattr(wsp.mni, output + suffix, reg.struc2std(wsp, struc_output))
             wsp.log.write(" - DONE\n")
 
     if wsp.output_custom: 
